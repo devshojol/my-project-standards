@@ -96,6 +96,18 @@ const frameworks = [
   has("electron") && "Electron",
 ].filter(Boolean);
 
+const UI_DEPS = ["react", "react-native", "expo", "next", "vite", "react-scripts", "vue", "svelte", "@angular/core"];
+const SERVER_DEPS = ["express", "fastify", "koa", "@nestjs/core", "@hapi/hapi", "hono"];
+const hasUi = UI_DEPS.some(has);
+const hasServer = SERVER_DEPS.some(has);
+const profile = hasServer && !hasUi
+  ? "backend (Node server) → references/backend/"
+  : hasUi && hasServer
+    ? "frontend → references/*.md, plus references/backend/ rules for the server code in this repo"
+    : hasUi
+      ? "frontend → references/*.md (top level)"
+      : "unclear (no UI or server framework in package.json) - ask, or apply only the portable rules";
+
 const libraries = [
   ["@reduxjs/toolkit", "Redux Toolkit (+ RTK Query)"],
   ["zustand", "Zustand"],
@@ -113,7 +125,15 @@ const libraries = [
   ["@playwright/test", "Playwright"],
   ["cypress", "Cypress"],
   ["typescript", "TypeScript (package)"],
+  ["mongoose", "Mongoose"],
   ["prisma", "Prisma"],
+  ["zod", "Zod"],
+  ["pino", "pino"],
+  ["bullmq", "BullMQ"],
+  ["ioredis", "ioredis"],
+  ["supertest", "Supertest"],
+  ["mongodb-memory-server", "mongodb-memory-server"],
+  ["@sentry/node", "Sentry Node"],
   ["@sentry/react-native", "Sentry RN"],
   ["@sentry/nextjs", "Sentry Next"],
 ].filter(([name]) => has(name)).map(([name, label]) => `${label} ${deps[name]}`);
@@ -151,7 +171,8 @@ const otherConfigs = firstExisting([
   "postcss.config.js", "postcss.config.mjs", "app.json", "app.config.js", "app.config.ts", "eas.json", "jest.config.js",
   "jest.setup.js", "vitest.config.ts", "vitest.config.js", "vite.config.ts", "vite.config.js", "next.config.js",
   "next.config.mjs", "next.config.ts", "playwright.config.ts", "biome.json", ".editorconfig", ".nvmrc", ".maestro",
-  "patches", ".github/workflows", ".husky", "commitlint.config.js",
+  "patches", ".github/workflows", ".husky", "commitlint.config.js", ".env.example", ".spectral.yaml",
+  ".gitleaksignore", "nodemon.json", "src/config.js", "src/app.js", "src/worker.js", "Dockerfile",
 ]);
 if (pkg.jest) otherConfigs.push("package.json#jest");
 
@@ -165,14 +186,19 @@ const aliases = [...aliasesFrom("tsconfig.json"), ...aliasesFrom("jsconfig.json"
 
 // ---------- scripts ----------
 const scripts = pkg.scripts ?? {};
-const interactive = (cmd) => /--watch(All)?\b|\bexpo start\b|\bnext dev\b|^vite$|\bvite( --|$)|\bnodemon\b|\bstorybook dev\b/.test(cmd);
+const interactive = (cmd) =>
+  /--watch(All)?\b|\bexpo start\b|\bnext dev\b|^vite$|\bvite( --|$)|\bnodemon\b|\bstorybook dev\b|^node\s+\S*(index|server|main|worker|app)\.m?js$/.test(
+    cmd
+  );
 const run = (name) => (packageManager.startsWith("npm") ? `npm run ${name}` : `${packageManager} run ${name}`);
 const verify = [];
 if (scripts.lint && !interactive(scripts.lint)) verify.push(`lint: ${run("lint")}`);
 else if (eslintFiles.length) verify.push(has("expo") ? "lint: npx expo lint" : "lint: npx eslint <changed files>");
 if (prettierFiles.length || has("prettier")) verify.push("format: npx prettier --check <changed files>");
 if (exists("tsconfig.json")) verify.push(scripts.typecheck ? `types: ${run("typecheck")}` : "types: npx tsc --noEmit");
-if (has("jest") || has("jest-expo") || pkg.jest) verify.push("tests: npx jest --ci <related test paths>");
+if (/--experimental-vm-modules/.test(scripts.test ?? "")) {
+  verify.push("tests: node --experimental-vm-modules node_modules/.bin/jest --ci <related test paths>");
+} else if (has("jest") || has("jest-expo") || pkg.jest) verify.push("tests: npx jest --ci <related test paths>");
 else if (has("vitest")) verify.push("tests: npx vitest run <related test paths>");
 if (scripts.build && !has("expo")) verify.push(`build: ${run("build")}`);
 
@@ -198,6 +224,8 @@ const skippedPresent = [...SKIP].filter((d) => exists(d));
 
 const srcRoot = exists("src") ? "src/" : "";
 const ratio = (list, re) => (list.length ? `${list.filter((f) => re.test(path.basename(f).replace(/\.[^.]+$/, ""))).length}/${list.length}` : "n/a");
+const roleSuffixFiles = codeFiles.filter((f) => /\/(routes|controllers|services|models|middlewares|schemas|jobs)\//.test(f));
+const roleSuffixed = roleSuffixFiles.filter((f) => /^[a-z][A-Za-z0-9]*\.[a-z]+\.m?[jt]s$/.test(path.basename(f)));
 const compFiles = codeFiles.filter((f) => f.startsWith(`${srcRoot}components/`) && /\.[jt]sx$/.test(f));
 const hookFiles = codeFiles.filter((f) => f.startsWith(`${srcRoot}hooks/`));
 const routeFiles = codeFiles.filter((f) => f.startsWith(`${srcRoot}app/`));
@@ -246,6 +274,7 @@ const report = {
   lockfiles,
   moduleType: pkg.type ?? "commonjs",
   frameworks,
+  profile,
   libraries,
   monorepo,
   language: {
@@ -265,6 +294,7 @@ const report = {
     hookExtensions: extCount(hookFiles) || "n/a",
     kebabCaseRouteFiles: ratio(routeFiles, /^([a-z0-9]+(-[a-z0-9]+)*|_layout|\+[a-z-]+|\[.+\]|\(.+\))$/),
     testFiles: testFiles.length,
+    serverLayerFilesWithRoleSuffix: roleSuffixFiles.length ? `${roleSuffixed.length}/${roleSuffixFiles.length}` : "n/a",
     imports: { relative: relImports, alias: aliasImports, relativeWithExtension: extImports },
   },
   env: { files: envReport, envGitIgnored: envIgnored, hasExample: envReport.some((e) => /example|sample|template/.test(e.file)) },
@@ -283,6 +313,7 @@ out.push(`# Project inspection: ${report.name ?? path.basename(ROOT)}`, "");
 out.push(`- Root: ${ROOT}`);
 out.push(`- Package manager: ${packageManager} (lockfiles: ${list(lockfiles)}); module type: ${report.moduleType}`);
 out.push(`- Frameworks: ${list(frameworks)}`);
+out.push(`- Suggested profile: ${profile}`);
 out.push(`- Libraries: ${list(libraries)}`);
 if (monorepo.length) out.push(`- Monorepo signals: ${list(monorepo)} - inspect the package you are changing, not just the root`);
 out.push(`- Language: ${report.language.tsconfig ? "TypeScript (tsconfig.json)" : "JavaScript (no tsconfig.json)"}; code files ${report.language.files || "none"}`);
@@ -305,6 +336,7 @@ const n = report.namingSignals;
 out.push(`- PascalCase component files: ${n.pascalCaseComponentFiles}`);
 out.push(`- Hook files named use*: ${n.hookFilesNamedUse} (extensions: ${n.hookExtensions})`);
 out.push(`- Route files kebab-case/special: ${n.kebabCaseRouteFiles}`);
+out.push(`- Server layer files named <name>.<role>.js: ${n.serverLayerFilesWithRoleSuffix}`);
 out.push(`- Test files: ${n.testFiles}`);
 out.push(`- Imports sampled: ${n.imports.relative} relative (${n.imports.relativeWithExtension} with extension), ${n.imports.alias} alias`);
 out.push("", "## Environment (names only)", "");

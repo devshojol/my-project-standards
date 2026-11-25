@@ -149,7 +149,7 @@ Example: an "Achievements" screen backed by an API. Skip steps the feature doesn
    `__tests__/features/achievement/achievementSlice.test.js`.
 10. **E2E hooks** - `testID`s on new interactive elements; add or extend a Maestro flow when the feature is on a
     critical path.
-11. **Verify** - SKILL.md step 7.
+11. **Verify** - SKILL.md step 8.
 
 ## 5. Bootstrapping a new project
 
@@ -184,11 +184,10 @@ Routes stay in `app/` with Next's reserved names (`page.jsx`, `layout.jsx`, `loa
 segment folders are kebab-case. Keep `components/`, `features/`, `hooks/`, `utils/`, `constants/`, `i18n/` beside
 `app/` (or under `src/` if the project uses it).
 
-### Backend (Node / Express)
+### Backend (Node server)
 
-The reference contains no backend. Don't project the frontend folder layout onto a server. Apply naming,
-import order, async/error handling, JSDoc, env, and lint/format rules; follow the backend's own layering
-(routes → controllers → services → data access, or whatever the project uses).
+Use the backend profile instead: `backend/project-structure.md`. Don't project this frontend layout onto a
+server.
 
 ## 6. Applying the structure to an existing project
 

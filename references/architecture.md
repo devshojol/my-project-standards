@@ -153,20 +153,23 @@ registers its `show` function in an effect; any module (including non-React code
 
 ## 8. Porting the architecture to other stacks
 
-| Reference element | React web (Vite) | Next.js (App Router) | Node backend |
-|---|---|---|---|
-| `app/` routes | `src/routes` with react-router | `app/` (`page.jsx`, `layout.jsx`) | n/a |
-| `components/<Domain>/...` | same | same; mark client components with `"use client"` only where needed | n/a |
-| `hooks/` | same | client hooks only | n/a |
-| `features/*Api.js` (RTK Query) | same | client components only; keep server fetching if the project uses it | n/a |
-| `features/*Slice.js` | same (if Redux is used) | store provider in a client `providers.jsx` | n/a |
-| NativeWind + StyleSheet | Tailwind CSS | Tailwind CSS | n/a |
-| SecureStore | httpOnly cookies set by the backend; never put tokens in `localStorage` [inferred] | same | n/a |
-| AsyncStorage | `localStorage` for non-sensitive cache | same (client only) | n/a |
-| `testID` | `data-testid` | `data-testid` | n/a |
-| `EXPO_PUBLIC_*` | `VITE_*` | `NEXT_PUBLIC_*` | plain `process.env` + validation at startup |
-| Maestro | Playwright/Cypress, if the project has one | same | n/a |
-| Portable to every stack | naming, import order, Prettier settings, JSDoc, async/error handling, i18n discipline, file-size limit, tests mirroring source | ← | ← |
+| Reference element | React web (Vite) | Next.js (App Router) |
+|---|---|---|
+| `app/` routes | `src/routes` with react-router | `app/` (`page.jsx`, `layout.jsx`) |
+| `components/<Domain>/...` | same | same; mark client components with `"use client"` only where needed |
+| `hooks/` | same | client hooks only |
+| `features/*Api.js` (RTK Query) | same | client components only; keep server fetching if the project uses it |
+| `features/*Slice.js` | same (if Redux is used) | store provider in a client `providers.jsx` |
+| NativeWind + StyleSheet | Tailwind CSS | Tailwind CSS |
+| SecureStore | httpOnly cookies set by the backend; never put tokens in `localStorage` [inferred] | same |
+| AsyncStorage | `localStorage` for non-sensitive cache | same (client only) |
+| `testID` | `data-testid` | `data-testid` |
+| `EXPO_PUBLIC_*` | `VITE_*` | `NEXT_PUBLIC_*` |
+| Maestro | Playwright/Cypress, if the project has one | same |
+| Portable to every stack | naming, import order, Prettier settings, JSDoc, async/error handling, i18n discipline, file-size limit, tests mirroring source | ← |
+
+Node servers (and Next.js route handlers that hold real business logic) follow the backend profile:
+`backend/architecture.md`.
 
 When a framework's own convention conflicts with a row above, the framework wins; record the decision in the report.
 

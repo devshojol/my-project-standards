@@ -2,17 +2,20 @@
 /**
  * check-conventions.mjs - read-only checks for the my-project-standards skill.
  *
- * Covers conventions that ESLint/Prettier don't: file and folder naming per role, file extensions,
- * import grouping/order, file size, component style, testID format, empty JSDoc, Redux slice names,
- * and secrets/hosts in source. Zero dependencies, Node >= 18.
+ * Covers conventions that ESLint/Prettier don't: file and folder naming per role, file extensions, import grouping
+ * and order, file size, component style, testID format, empty JSDoc, Redux slice names, layer rules of a Node server
+ * (process.env only in config, controllers pass errors to next, services never answer HTTP), and secrets/hosts in
+ * source. Two profiles: `frontend` (React / React Native / Next.js) and `backend` (Node server). Zero dependencies,
+ * Node >= 18.
  *
  * Usage:
  *   node check-conventions.mjs [paths...]        files or directories (default: the project root)
  *   node check-conventions.mjs --changed         files changed vs HEAD plus untracked files (git)
  * Options:
+ *   --profile=<auto|frontend|backend>  default auto: backend when package.json has a server framework and no UI one
  *   --root=<dir>        project root used for role detection (default: current directory)
  *   --base=<ref>        with --changed, compare against <ref> instead of HEAD
- *   --max-lines=<n>     effective-line limit (default 120)
+ *   --max-lines=<n>     frontend effective-line limit (default 120)
  *   --strict            exit 1 on warnings as well as errors
  *   --json              machine-readable output
  *
@@ -27,16 +30,31 @@ const SKIP_DIRS = new Set([
   "node_modules", ".git", "ios", "android", ".expo", "dist", "build", "coverage", ".next", "web-build",
   "out", "Pods", "vendor", ".turbo", ".cache", "e2e-reports", ".vercel",
 ]);
-const ROLE_DIRS = new Set([
+const FRONTEND_ROLES = new Set([
   "app", "components", "hooks", "features", "utils", "constants", "context", "store", "providers", "i18n",
   "data", "plugins", "__tests__",
 ]);
+const BACKEND_ROLES = new Set([
+  "routes", "controllers", "services", "models", "middlewares", "schemas", "jobs", "lib", "utils", "constants",
+  "config", "db", "docs", "emails", "streams", "tests",
+]);
+const UI_DEPS = ["react", "react-native", "expo", "next", "vite", "react-scripts", "vue", "svelte", "@angular/core"];
+const SERVER_DEPS = ["express", "fastify", "koa", "@nestjs/core", "@hapi/hapi", "hono"];
 
 const PASCAL = /^[A-Z][A-Za-z0-9]*$/;
 const CAMEL = /^[a-z][A-Za-z0-9]*$/;
+const CAMEL_WITH_ROLE = /^[a-z][A-Za-z0-9]*(\.[a-z][A-Za-z0-9]*)?$/;
 const LOWERCASE_COMPONENT_FOLDERS = /^(components|common|shared|ui|v\d+)$/;
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const HOOK = /^use[A-Z][A-Za-z0-9]*$/;
+const BACKEND_SUFFIX = Object.freeze({
+  routes: ["route"],
+  controllers: ["controller"],
+  middlewares: ["middleware"],
+  models: ["model"],
+  schemas: ["schema"],
+  jobs: ["job", "schedule"],
+});
 
 // ---------- arguments ----------
 const argv = process.argv.slice(2);
@@ -58,6 +76,10 @@ const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
 const HAS_FILE_ROUTER = Boolean(deps["expo-router"] || deps.next);
 const HAS_BUNDLER = Boolean(deps.expo || deps["react-native"] || deps.next || deps.vite || deps["react-scripts"]);
 const NODE_ESM = pkg.type === "module" && !HAS_BUNDLER;
+const AUTO_PROFILE = SERVER_DEPS.some((d) => deps[d]) && !UI_DEPS.some((d) => deps[d]) ? "backend" : "frontend";
+const PROFILE = ["frontend", "backend"].includes(opt("profile", "auto")) ? opt("profile") : AUTO_PROFILE;
+const BACKEND = PROFILE === "backend";
+const ROLE_DIRS = BACKEND ? BACKEND_ROLES : FRONTEND_ROLES;
 
 // ---------- helpers ----------
 function readJson(file) {
@@ -188,7 +210,8 @@ function describe(file) {
   const roleIdx = segs.findIndex((s) => ROLE_DIRS.has(s));
   const ext = path.extname(file);
   const base = path.basename(file, ext);
-  const isTest = /(^|\/)__tests__\//.test(rel) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(rel) || base === "jest.setup";
+  const isTest =
+    /(^|\/)(__tests__|tests)\//.test(rel) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(rel) || base === "jest.setup";
   return {
     rel,
     segs,
@@ -219,10 +242,7 @@ const reportedFolders = new Set();
 const sliceNames = new Map();
 const add = (file, line, severity, rule, message) => findings.push({ file, line, severity, rule, message });
 
-function checkNaming(d) {
-  if (d.isRootFile || d.isScript || !d.role) return;
-  const where = d.rel;
-
+function checkFolderCharacters(d) {
   for (const [i, folder] of d.segs.slice(0, -1).entries()) {
     const key = d.segs.slice(0, i + 1).join("/");
     if (/[^A-Za-z0-9._()[\]+@-]/.test(folder) && !reportedFolders.has(key)) {
@@ -230,7 +250,10 @@ function checkNaming(d) {
       add(key, 0, "warn", "folder-characters", "Folder name contains characters other than letters, digits, - _ . ( ) [ ] + @.");
     }
   }
+}
 
+function checkFrontendNaming(d) {
+  const where = d.rel;
   if (d.role === "components") {
     d.roleFolders.forEach((folder, i) => {
       const key = `${d.rolePrefix}/${d.roleFolders.slice(0, i + 1).join("/")}`;
@@ -265,13 +288,45 @@ function checkNaming(d) {
   }
 }
 
-function checkContent(d, src) {
-  if (src.length > 1_000_000) return;
-  const { noComments, codeOnly } = strip(src);
-  const file = d.rel;
-  const relaxed = d.isRootFile || d.isScript;
+function checkBackendNaming(d) {
+  const where = d.rel;
+  if (d.role === "tests") {
+    const support = d.roleFolders.some((f) => ["helpers", "factories", "fixtures", "mocks", "__mocks__"].includes(f));
+    if (!support && d.base !== "setup" && !/\.(test|spec)$/.test(d.base)) {
+      add(where, 1, "warn", "test-file-naming", "Files under tests/ (outside helpers/, factories/, fixtures/) are tests: name them <subject>.test.js.");
+    }
+    return;
+  }
+  d.roleFolders.forEach((folder, i) => {
+    const key = `${d.rolePrefix}/${d.roleFolders.slice(0, i + 1).join("/")}`;
+    if (!/^_?[a-z][A-Za-z0-9]*$/.test(folder) && !reportedFolders.has(key)) {
+      reportedFolders.add(key);
+      add(key, 0, "warn", "server-folder-naming", "Server folders are lowercase or camelCase (v2/, admin/, dailyGoal/).");
+    }
+  });
+  if (d.base === "index") return;
+  const suffixes = BACKEND_SUFFIX[d.role];
+  if (suffixes) {
+    const match = new RegExp(`^[a-z][A-Za-z0-9]*\\.(${suffixes.join("|")})$`).test(d.base);
+    if (!match && !(d.role === "models" && CAMEL.test(d.base))) {
+      add(where, 1, "warn", "layer-file-naming", `Files in ${d.role}/ are named <camelName>.${suffixes.join(" | .")}.js.`);
+    } else if (d.role === "models" && CAMEL.test(d.base)) {
+      add(where, 1, "info", "layer-file-naming", "Model files end in .model.js; shared helpers in models/ are fine.");
+    }
+  } else if (!CAMEL_WITH_ROLE.test(d.base) && d.role !== "docs") {
+    add(where, 1, "warn", "module-file-naming", `Files in ${d.role}/ are camelCase, with an optional .<role> suffix (dailyGoal.rules.js).`);
+  }
+}
 
-  // Secrets and environment-specific config (values are never printed)
+function checkNaming(d) {
+  if (d.isRootFile || d.isScript || !d.role) return;
+  checkFolderCharacters(d);
+  if (BACKEND) checkBackendNaming(d);
+  else checkFrontendNaming(d);
+}
+
+function checkSecrets(d, src) {
+  const file = d.rel;
   const secretPatterns = [
     [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "private key"],
     [/\bAKIA[0-9A-Z]{16}\b/, "AWS access key id"],
@@ -280,40 +335,30 @@ function checkContent(d, src) {
     [/\bsk_(live|test)_[A-Za-z0-9]{16,}\b/, "Stripe secret key"],
   ];
   if (!d.isTest) {
+    // Tests legitimately use fake credentials in URIs and fixtures; only high-confidence key formats apply to them.
+    secretPatterns.push([/mongodb(\+srv)?:\/\/[^\s"'`/:@]+:[^\s"'`/@]+@/, "database URI with credentials"]);
     secretPatterns.push([/(api[_-]?key|secret|password|private[_-]?key|auth[_-]?token)["']?\s*[:=]\s*["'`][A-Za-z0-9_\-+/=]{20,}["'`]/i, "credential-like literal"]);
   }
   for (const [re, label] of secretPatterns) {
     const m = re.exec(src);
     if (m) add(file, lineAt(src, m.index), "error", "possible-secret", `Looks like a ${label} in source. Move it to an untracked .env / secret store.`);
   }
-  if (!d.isTest && !relaxed) {
-    const configPatterns = [
-      [/https:\/\/[0-9a-f]{32}@[\w.-]*sentry\.io/, "monitoring DSN"],
-      [/["'`]https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|[\w.-]*ngrok[\w.-]*|[\w.-]+\.local)\b/, "local/dev host"],
-      [/["'`]https?:\/\/[^"'`\s]+\/api\b/, "API base URL"],
-      [/\b\d{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com\b/, "OAuth client id"],
-    ];
-    for (const [re, label] of configPatterns) {
-      const m = re.exec(src);
-      if (m) add(file, lineAt(src, m.index), "warn", "config-in-source", `Hardcoded ${label}. Read it from env (EXPO_PUBLIC_*/NEXT_PUBLIC_*/VITE_*) or app config.`);
-    }
+  if (d.isTest || d.isRootFile || d.isScript) return;
+  // A client's own API base URL belongs in env; a server calling a third-party API endpoint is usually fine (info).
+  const configPatterns = [
+    [/https:\/\/[0-9a-f]{32}@[\w.-]*sentry\.io/, "monitoring DSN", "warn"],
+    [/["'`]https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|[\w.-]*ngrok[\w.-]*|[\w.-]+\.local)\b/, "local/dev host", "warn"],
+    [/["'`]https?:\/\/[^"'`\s]+\/api\b/, "API base URL", BACKEND ? "info" : "warn"],
+    [/\b\d{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com\b/, "OAuth client id", "warn"],
+  ];
+  for (const [re, label, severity] of configPatterns) {
+    const m = re.exec(src);
+    if (m) add(file, lineAt(src, m.index), severity, "config-in-source", `Hardcoded ${label}. Read it from config/env (EXPO_PUBLIC_*, NEXT_PUBLIC_*, VITE_*, or the server's config.js).`);
   }
+}
 
-  if (relaxed) return;
-  const jsx = hasJsx(codeOnly);
-
-  // Extensions
-  if (!d.isTest && /\.[cm]?[jt]s$/.test(d.ext) && jsx) {
-    add(file, 1, "warn", "jsx-in-js-file", "File contains JSX; use .jsx/.tsx.");
-  }
-  if (!d.isTest && /sx$/.test(d.ext) && !jsx && !(d.rolePrefix && roleMajorityIsJsx(d.rolePrefix))) {
-    add(file, 1, "warn", "jsx-extension-without-jsx", "No JSX in this file; use .js/.ts (unless the folder's convention is .jsx).");
-  }
-
-  // Tests may interleave imports with jest.mock(); the remaining checks target source files
-  if (d.isTest) return;
-
-  // Imports: externals → aliases → relative, alphabetical, sorted specifiers, no JS extensions
+function checkImports(d, src, codeOnly) {
+  const file = d.rel;
   const imports = [];
   const importRe = /^[ \t]*import\b(?!\s*\()/gm;
   let m;
@@ -332,44 +377,51 @@ function checkContent(d, src) {
       isDefaultReact: /^\s*import\s+React\b/.test(head),
     });
   }
-  let orderReported = false;
+  let groupReported = false;
+  let alphaReported = false;
   imports.forEach((imp, i) => {
     const prev = imports[i - 1];
-    if (prev && !orderReported) {
-      const a = [importGroup(prev.spec), prev.spec.toLowerCase()];
-      const b = [importGroup(imp.spec), imp.spec.toLowerCase()];
-      if (a[0] > b[0] || (a[0] === b[0] && a[1] > b[1])) {
-        orderReported = true;
-        add(file, imp.line, "warn", "import-order", `"${imp.spec}" should come before "${prev.spec}" (packages, then aliases, then relative; alphabetical).`);
+    if (prev) {
+      const [ga, gb] = [importGroup(prev.spec), importGroup(imp.spec)];
+      if (ga > gb && !groupReported) {
+        groupReported = true;
+        add(file, imp.line, "warn", "import-order", `"${imp.spec}" should come before "${prev.spec}" (packages, then aliases, then relative paths).`);
+      } else if (ga === gb && prev.spec.toLowerCase() > imp.spec.toLowerCase() && !alphaReported) {
+        alphaReported = true;
+        add(file, imp.line, BACKEND ? "info" : "warn", "import-order", `"${imp.spec}" should come before "${prev.spec}" (alphabetical inside a group).`);
       }
     }
-    const sorted = [...imp.named].sort((x, y) => (x.toLowerCase() < y.toLowerCase() ? -1 : x.toLowerCase() > y.toLowerCase() ? 1 : 0));
-    if (imp.named.join() !== sorted.join()) add(file, imp.line, "warn", "import-specifier-order", `Sort named imports: { ${sorted.join(", ")} }.`);
-    if (!NODE_ESM && imp.spec.startsWith(".") && /\.(jsx?|tsx?|mjs|cjs)$/.test(imp.spec)) {
-      add(file, imp.line, "warn", "import-extension", `Drop the extension from "${imp.spec}".`);
+    if (!BACKEND) {
+      const lower = (s) => s.toLowerCase();
+      const sorted = [...imp.named].sort((x, y) => (lower(x) < lower(y) ? -1 : lower(x) > lower(y) ? 1 : 0));
+      if (imp.named.join() !== sorted.join()) add(file, imp.line, "warn", "import-specifier-order", `Sort named imports: { ${sorted.join(", ")} }.`);
+    }
+    if (imp.spec.startsWith(".")) {
+      const hasExt = /\.[A-Za-z0-9]+$/.test(imp.spec);
+      if (NODE_ESM && !hasExt) {
+        add(file, imp.line, "error", "import-extension", `Node ES modules need the file extension: "${imp.spec}.js".`);
+      } else if (!NODE_ESM && /\.(jsx?|tsx?|mjs|cjs)$/.test(imp.spec)) {
+        add(file, imp.line, "warn", "import-extension", `Drop the extension from "${imp.spec}".`);
+      }
     }
     if (imp.isDefaultReact && !/\bReact\./.test(codeOnly)) {
       add(file, imp.line, "warn", "unused-react-import", "The automatic JSX runtime doesn't need `import React`; import only the hooks you use.");
     }
   });
+}
 
+function checkFrontendContent(d, src, noComments, codeOnly, jsx) {
+  const file = d.rel;
   // Size (mirrors max-lines with skipComments + skipBlankLines)
   const effective = noComments.split("\n").filter((l) => l.trim()).length;
   if (effective > MAX_LINES) {
     const disabled = /eslint-disable[^\n]*max-lines/.test(src) ? " (max-lines is disabled in-file)" : "";
     add(file, 1, "warn", "max-lines", `${effective} effective lines > ${MAX_LINES}${disabled}. Split into child components or hooks.`);
   }
-
-  // Component style
   const edf = /export\s+default\s+function\b/.exec(codeOnly);
   if (edf && jsx) add(file, lineAt(src, edf.index), "warn", "component-style", "Prefer `const Name = () => {}` + `export default Name;` (unless the project's convention differs).");
-
-  // Logging
-  const log = /\bconsole\.(log|debug|info|trace)\s*\(/.exec(codeOnly);
-  if (log) add(file, lineAt(src, log.index), "warn", "console", "Remove console logging or route it to the monitoring/alert layer.");
-
-  // testID format
   const tid = /\b(testID|data-testid)=\{?\s*(["'`])([^"'`]*)\2/g;
+  let m;
   while ((m = tid.exec(noComments))) {
     const value = src.slice(m.index, m.index + m[0].length).replace(/^[^"'`]*["'`]/, "").slice(0, -1);
     const staticParts = value.replace(/\$\{[^}]*\}/g, "");
@@ -377,12 +429,6 @@ function checkContent(d, src) {
       add(file, lineAt(src, m.index), "warn", "testid-format", `testID "${value}" should be kebab-case.`);
     }
   }
-
-  // Empty JSDoc
-  const emptyDoc = /\/\*\*[\s*]*\*\//.exec(src);
-  if (emptyDoc) add(file, lineAt(src, emptyDoc.index), "warn", "empty-jsdoc", "Empty JSDoc block; write a one-line description or remove it.");
-
-  // Redux slice names
   if (/Slice$/.test(d.base)) {
     const slice = /createSlice\(\s*\{[\s\S]*?\bname:\s*["'`]([^"'`]*)["'`]/.exec(src);
     if (slice) {
@@ -393,6 +439,49 @@ function checkContent(d, src) {
       else sliceNames.set(slice[1], file);
     }
   }
+}
+
+function checkBackendContent(d, src, codeOnly) {
+  const file = d.rel;
+  const isConfigModule = /(^|\/)config(\.[cm]?js|\/)/.test(d.rel);
+  const env = /\bprocess\.env\b/.exec(codeOnly);
+  if (env && !isConfigModule) add(file, lineAt(src, env.index), "warn", "env-outside-config", "Only the config module (src/config.js) reads process.env; import `config` instead.");
+  if (d.role === "controllers" && /async\s*\(\s*req\s*,\s*res\b/.test(codeOnly) && !/\bnext\s*\(/.test(codeOnly)) {
+    add(file, 1, "warn", "controller-errors", "Controllers wrap the handler in try/catch and pass errors to next(error).");
+  }
+  if (d.role === "services") {
+    // `res.status(` / `res.send(` are Express-only calls; `res.json()` is skipped because fetch responses have it too.
+    const http = /\bres\.(status|send|sendStatus|setHeader)\s*\(/.exec(codeOnly);
+    if (http) add(file, lineAt(src, http.index), "warn", "service-http", "Services return values or throw AppError; only controllers answer HTTP.");
+  }
+}
+
+function checkContent(d, src) {
+  if (src.length > 1_000_000) return;
+  checkSecrets(d, src);
+  if (d.isRootFile || d.isScript) return;
+  const { noComments, codeOnly } = strip(src);
+  const file = d.rel;
+  const jsx = !BACKEND && hasJsx(codeOnly);
+
+  if (!BACKEND && !d.isTest && /\.[cm]?[jt]s$/.test(d.ext) && jsx) add(file, 1, "warn", "jsx-in-js-file", "File contains JSX; use .jsx/.tsx.");
+  if (!BACKEND && !d.isTest && /sx$/.test(d.ext) && !jsx && !(d.rolePrefix && roleMajorityIsJsx(d.rolePrefix))) {
+    add(file, 1, "warn", "jsx-extension-without-jsx", "No JSX in this file; use .js/.ts (unless the folder's convention is .jsx).");
+  }
+
+  // Tests may interleave imports with mocks; the remaining checks target source files.
+  if (d.isTest) return;
+  checkImports(d, src, codeOnly);
+
+  const log = /\bconsole\.(log|debug|info|trace|warn|error)\s*\(/.exec(codeOnly);
+  if (log && (BACKEND || /console\.(log|debug|info|trace)/.test(log[0]))) {
+    add(file, lineAt(src, log.index), "warn", "console", BACKEND ? "Use the logger (lib/logger.js / req.log), never console." : "Remove console logging or route it to the monitoring/alert layer.");
+  }
+  const emptyDoc = /\/\*\*[\s*]*\*\//.exec(src);
+  if (emptyDoc) add(file, lineAt(src, emptyDoc.index), "warn", "empty-jsdoc", "Empty JSDoc block; write a one-line description or remove it.");
+
+  if (BACKEND) checkBackendContent(d, src, codeOnly);
+  else checkFrontendContent(d, src, noComments, codeOnly, jsx);
 
   // Commented-out code (informational)
   const lines = src.split("\n");
@@ -422,12 +511,12 @@ for (const file of files) {
 const order = { error: 0, warn: 1, info: 2 };
 findings.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || order[a.severity] - order[b.severity]);
 const count = (s) => findings.filter((f) => f.severity === s).length;
-const summary = { files: files.length, errors: count("error"), warnings: count("warn"), info: count("info") };
+const summary = { profile: PROFILE, files: files.length, errors: count("error"), warnings: count("warn"), info: count("info") };
 
 if (AS_JSON) {
   console.log(JSON.stringify({ summary, findings }, null, 2));
 } else {
-  console.log(`Conventions check - ${files.length} file(s) under ${ROOT}`);
+  console.log(`Conventions check (${PROFILE} profile) - ${files.length} file(s) under ${ROOT}`);
   let current = null;
   for (const f of findings) {
     if (f.file !== current) {

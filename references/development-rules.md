@@ -246,7 +246,7 @@ For new projects, keep these and add `"test:ci": "jest --ci"` and `"format": "pr
   prefix so they never reach the bundle, and carry a `# DO NOT COMMIT` comment. [config]
 - Commit a `.env.example` with variable names and placeholder values only. [inferred - missing in the reference]
 - Don't hardcode API hosts, OAuth client IDs, DSNs, or keys in source (the reference does in a few places; don't copy). [inferred]
-- Web equivalents: `NEXT_PUBLIC_*` (Next.js), `VITE_*` (Vite). Servers read plain `process.env` and validate at startup.
+- Web equivalents: `NEXT_PUBLIC_*` (Next.js), `VITE_*` (Vite). Node servers follow `backend/development-rules.md` §4 (one Zod-validated `config.js`).
 - When inspecting a project, read variable **names** only; never print or copy values.
 
 ## 6. Testing setup [config]
